@@ -1,0 +1,33 @@
+import java.io.*;
+public class Main {
+    public static void main (String[] args) throws IOException {
+        File file = new File(args[0]);
+        BufferedReader buffer = new BufferedReader(new FileReader(file));
+        String line;
+        while ((line = buffer.readLine()) != null) {
+            line = line.trim();
+            if(isSelfDescribing(line,0))
+              System.out.println("1");
+            else
+              System.out.println("0");
+        }
+    }
+    
+    public static boolean isSelfDescribing (String s, int index)
+    {
+      if(index==s.length())
+        return true;
+      
+      String c = s.substring(index,index+1);
+      int num = 0;
+      for(int i=0; i<s.length(); i++){
+        if(index == Integer.parseInt(s.substring(i,i+1)))
+          num++;}
+      
+      if(num==Integer.parseInt(c))
+        return true&&isSelfDescribing(s,index+1);
+      else
+        return false;
+    }
+    
+}
