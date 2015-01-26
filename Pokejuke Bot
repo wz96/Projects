@@ -1,0 +1,515 @@
+open Team
+open Definitions
+open Constants
+open Util
+
+(* Attention Student:
+ * Do not change the arguments of handle_request. However, feel free to change 
+ * all of the inside and write many helper functions if you want to have a good bot.
+ *)
+
+(* Change this to the name of your bot. *)
+let name = "bot" 
+
+let _ = Random.self_init ()
+
+
+(*Point system for picking next pokemon to use either after one faints or 
+at the beginning of the round. Used for StaterRequest. Points system
+is pretty self-explanatory just looking at the code.
+
+I thought speed wasn't as important and divided it by 2 - if 
+you don't think so, just change it.
+*)
+
+let battleRound_point_system (yours : steammon) (opp : steammon) : int =
+
+  let effectiveness_points1 = (match yours.first_type with
+    | None -> failwith "Error: impossible not to have a first type."
+    | Some x -> (match opp.first_type with
+      | None -> failwith "Error: impossible not to have a first type."
+      | Some y -> (match (Util.weakness x y) with 
+        | Regular -> 300
+        | SuperEffective -> 400
+        | NotVeryEffective -> 90
+        | Ineffective -> 0))) in
+  let effectiveness_points2 = (match yours.first_type with
+    | None -> failwith "Error: impossible not to have a first type."
+    | Some x -> (match opp.second_type with
+      | None -> 0
+      | Some y -> (match (Util.weakness x y) with 
+        | Regular -> 300
+        | SuperEffective -> 400
+        | NotVeryEffective -> 90
+        | Ineffective -> 0))) in
+  let effectiveness_points3 = (match yours.second_type with
+    | None -> 0
+    | Some x -> (match opp.first_type with
+      | None -> failwith "Error: impossible not to have a first type."
+      | Some y -> (match (Util.weakness x y) with 
+        | Regular -> 300
+        | SuperEffective -> 400
+        | NotVeryEffective -> 90
+        | Ineffective -> 0))) in
+  let effectiveness_points4 = (match yours.second_type with
+    | None -> 0
+    | Some x -> (match opp.second_type with
+      | None -> 0
+      | Some y -> (match (Util.weakness x y) with 
+        | Regular -> 300
+        | SuperEffective -> 400
+        | NotVeryEffective -> 90
+        | Ineffective -> 0))) in
+  let total_effectiveness_points = effectiveness_points1 + effectiveness_points2 + effectiveness_points3 + effectiveness_points4 in
+  let current_HP_points = yours.curr_hp in
+  let max_HP_points = yours.max_hp in
+  let attack_points = yours.attack*3 in
+  let splAttack_points = yours.spl_attack*2 in
+  let defense_points = yours.defense in
+  let splDefense_points = yours.spl_defense in
+  let speed_points = yours.speed in
+  let status_points = (match yours.status with
+    | None -> 0
+    | Some x -> (match x with
+      | Paralyzed -> -300
+      | Poisoned -> -200
+      | Asleep -> -300
+      | Burned -> -200
+      | Frozen -> -300
+      | Confused -> -170)) in
+  total_effectiveness_points+current_HP_points+max_HP_points+attack_points+
+  splAttack_points+defense_points+splDefense_points+speed_points+
+  status_points
+
+
+
+
+
+(*Helper function to determine which steammon to choose at
+each turn in the draft round.*)
+let draftRound_point_system (m : steammon) (deck : steammon list) : int =
+
+  (*This is a static list of steammon types that we want the most. If, during
+  the draft phase, there is one of these types of steammons in the list of
+  available steammons to choose from and WE DON'T CURRENTLY HAVE IT, it will
+  be valued highly. We are trying to avoid two of the same type.*)
+  let idealList = [Fire;Grass;Water;Rock;Normal;Electric] in
+
+  (*At the beginning of each draft round, check to see if you already have one 
+  of these types in your current deck of steammons - if so, remove the type
+  from the idealList, so that you have an updated list of types that you value highly.*)
+
+  (*First,create a list of all of the types in your deck of steammons (remember that
+  each steammon can have two types)*)
+  let typeList = List.fold_left (fun a e -> match e.first_type with
+    | None -> failwith "Error: steammon cannot have NO TYPE"
+    | Some x -> (match e.second_type with 
+      | None -> [x]@a
+      | Some y -> [x]@[y]@a)) [] deck in
+
+  (*Second, update the idealList to get rid of types you already have. You will have
+  a fold_left inside of a fold_left - the outside fold is the types in your deck, and
+  the inside fold is the types in your idealList. Basically, if the type is already in
+  your deck, the entire inside fold function should return false, and the outside fold function
+  should return the accumulator, which ignores that type when building the new ideal list.*)
+  let newIdealList = List.fold_left (fun a1 e1 -> if (List.fold_left (fun a2 e2 -> 
+  if e1 = e2 then (false&&a2) else (true&&a2)) true typeList) = false then a1 else [e1]@a1) [] idealList in
+
+  (*The list of types of the steammon that you are checking*)
+  let monster_types = match m.first_type with
+    | None -> failwith "Error: Steammon cannot have NO TYPE."
+    | Some x -> (match m.second_type with
+      | None -> [x]
+      | Some y -> [x]@[y]) in
+
+  (*Now check if this new steammon has a type in your ideal list - if so, add 800 points.
+  Again, this uses a fold inside of fold - outside fold goes through monster types, inside
+  fold goes through the ideal types*)
+  let type_points = List.fold_left (fun aa ee -> (List.fold_left (fun aaa eee -> 
+  if ee=eee then 550 else 0) 0 newIdealList)+aa) 0 monster_types in
+
+  (*Now we are just checking steammon stats, in a way similar to how we did the
+  battle point system*)
+  let hp_points = m.max_hp in
+  let attack_points = m.attack*2 in
+  let splAttack_points = m.spl_attack*2 in
+  let defense_points = m.defense in
+  let splDefense_points = m.spl_defense in
+  let speed_points = m.speed in
+
+  type_points+hp_points+attack_points+splAttack_points+defense_points+splDefense_points
+  +speed_points
+
+
+
+(*Helper function to determine point system for a specific move. Moves with
+a more effective type matchup, more power points, more accuracy points,
+and an effect will have more points.*)
+let move_point_system (m : move) (mine: steammon) (enemy : steammon) : int = 
+  if (m.element = Typeless || m.element = Normal) then 
+    Util.calculate_damage (mine.spl_attack) (enemy.spl_defense) (m.power) (Util.multiplier_of_modifier mine.mods.attack_mod)
+  else Util.calculate_damage (mine.spl_attack) (enemy.spl_defense) (m.power) (Util.multiplier_of_modifier mine.mods.spl_attack_mod)
+
+
+
+
+
+
+
+(*Helper function to determine which steammon to choose after a steammon
+faints or at the beginning of the battle round.*)
+let starter_request_helper (s : game_status_data) (c : color) : action = 
+  let (a1,b1) = s in
+  let my_team = if c = Red then a1 else b1 in
+  let e_team = if c = Red then b1 else a1 in
+  let (myMonsters, myInventory, myCredits) = my_team in
+  let (eMonsters, eInventory, eCredits) = e_team in
+
+  (*Create a list of tuples, each with a monster and its respective point value.*)
+  let useable_steammons = List.fold_left (fun a e -> if e.curr_hp<=0 then a else [e]@a) [] myMonsters in
+
+
+  let monsterPointsList = 
+  List.fold_left (fun a e -> [(battleRound_point_system e (List.hd eMonsters),e)]@a) [] useable_steammons in
+
+  (*Fold through the list of points to find the maximum one, then retrn that tuple of the monster and its point value.*)
+  let pick = List.fold_left (fun acc el -> match el with
+    | (points,monster) -> (match acc with
+      | (largestPoints,bestMonster) -> if points>largestPoints then el else acc)) (List.hd monsterPointsList) monsterPointsList in
+
+  (*Select that monster.*)
+  match pick with
+  | (p,m) -> SelectStarter(m.species)
+
+
+
+
+
+let pick_request_helper (gsd : game_status_data) (c : color) (ms : move_set) (sp : steam_pool) : action = 
+  
+  (*Set up enemy's team data and my team's data*)
+  let (a1,b1) = gsd in
+  let my_team = if c = Red then a1 else b1 in
+  let e_team = if c = Red then b1 else a1 in
+  let (myMonsters, myInventory, myCredits) = my_team in
+  let (_, _, _) = e_team in
+
+  (*To check which credit threshold you are at, we look at the number of monsters already
+  in our "deck".
+
+  Pick    Threshold     <- leftover credits trickle down ot next threshold
+  1       400
+  2       300            
+  3       300
+  4       200
+  5       200
+  6       100*)
+
+  let credit_threshold = if List.length myMonsters = 0 then 400
+                         else if List.length myMonsters = 1 then 300+(myCredits-1100)
+                         else if List.length myMonsters = 2 then 300+(myCredits-800)
+                         else if List.length myMonsters = 3 then 200+(myCredits-500)
+                         else if List.length myMonsters = 4 then 200+(myCredits-300)
+                         else if List.length myMonsters = 5 then myCredits (*Remaining credits*)
+                         else failwith "Error - no more monsters to draw." in
+  (*Using credit threshold, rank the steammons (another point system).*)
+
+  (*Using the draft round point system, make a list of tuples, each with the monster
+  and its respective point value, ranking the entire list of available steammons
+  to draft from.*)
+  let monster_point_list = List.fold_left (fun a e -> [(draftRound_point_system e myMonsters,e)]@a) [] sp in
+
+
+  (*Fold through monster_point_list, first checking if monster is under credit threshold, then checking its rank and 
+  eventually finding the largest ranked steammon under the credit threshold*)
+  let pick = List.fold_left (fun a e -> match e with
+    | (points,mon) -> if mon.cost > credit_threshold then a else (match a with 
+      | (maxpoints,bestmon) -> if points>maxpoints then e else a)) (List.hd monster_point_list) monster_point_list
+
+  in match pick with
+  | (p,m) -> PickSteammon m.species
+
+
+
+
+
+
+
+(*Helper function to determine if we should switch steammon during an action request.
+Returns a tuple of a bool (whether or not we should switch) and a steammon (if the 
+bool is true, then the steammon that we should switch to; if bool is false, then
+just the current steammon)*)
+let should_we_switch (mine : steammon) (enemy : steammon) (deck : steammon list) : bool * steammon = 
+
+  (*1. Check if our steammon is in an unfavorable type matchup with the opponents.
+  Do this with a point system and check each type against each of the opponent's type.*)
+  
+  let useable_steammons = List.fold_left (fun a e -> if e.curr_hp<=0 then a else [e]@a) [] deck in
+
+
+  let unfavorable = 
+
+  (*my first type vs opp first type*)
+  match mine.first_type with 
+  | None -> failwith "Error: cannot have no first type."
+  | Some x -> (match enemy.first_type with
+    | None -> failwith "Error: cannot have no first type." 
+    | Some y -> (match (Util.weakness x y) with
+      | Regular -> 3
+      | SuperEffective -> 4
+      | NotVeryEffective -> 1
+      | Ineffective -> 0)) +
+
+  (*my first type vs opp second type*)
+  match mine.first_type with
+  | None -> failwith "Error: cannot have no first type"
+  | Some x -> (match enemy.second_type with
+    | None -> 0
+    | Some y -> (match (Util.weakness x y) with
+      | Regular -> 3
+      | SuperEffective -> 4
+      | NotVeryEffective -> 1
+      | Ineffective -> 0)) + 
+
+  (*my second type vs opp first type*)
+  match mine.second_type with
+  | None -> 0
+  | Some x -> (match enemy.first_type with
+    | None -> failwith "Error: cannot have no first type."
+    | Some y -> (match (Util.weakness x y) with
+      | Regular -> 3
+      | SuperEffective -> 4
+      | NotVeryEffective -> 1
+      | Ineffective -> 0)) + 
+
+  (*my second type vs opp second type*)
+  match mine.second_type with
+  | None -> 0
+  | Some x -> (match enemy.first_type with
+    | None -> 0
+    | Some y -> (match (Util.weakness x y) with
+      | Regular -> 3
+      | SuperEffective -> 4
+      | NotVeryEffective -> 1
+      | Ineffective -> 0)) in
+
+  (*It is unfavorable if the points add up to be less than 3; if not, don't switch,
+    and return a tuple of (false,mine)*)
+  if unfavorable > 4 then (false,mine) else
+
+  (*Otherwise....*)
+
+
+  (*3. Use your battleround point system to find the best pokemon out of your deck*)
+  let lst = List.fold_left (fun a e -> [(battleRound_point_system e enemy,e)]@a) [] useable_steammons in
+
+  let pick = List.fold_left (fun a1 e1 -> match e1 with
+    | (points,monster) -> match a1 with
+      | (mostPoints,bestMonster) -> if points>mostPoints then e1 else a1) (List.hd lst) lst in
+
+  match pick with
+  | (p,m) -> (true,m)
+
+
+
+
+
+(*Helper function to determine if we should use a max potion. return true if
+yes, false if no*)
+let use_maxPotion (activeMonster : steammon) (inv : inventory) : bool =
+
+(*Check to see if we have any max potions left; if so, check to see if we should
+use it*)
+ if (List.nth inv 1) > 0 then 
+    (*See if we should use a max potion: if current HP is < 20% of max HP, we need to use a max potion*)
+    (let percentDamage = float_of_int (activeMonster.curr_hp) /. float_of_int (activeMonster.max_hp) in 
+    if (percentDamage < 0.20) then true else false)
+  else false
+
+
+
+
+
+
+(*Helper function to determine if we should use a fullHeal. return true if yes, false if no*)
+let use_fullHeal (activeMonster : steammon) (inv : inventory) : bool =
+
+  (*Check to see if we have any fullHeals left; if so, check to see if we should use it*)
+  if (List.nth inv 3) > 0 then
+    (*See if we should use the full heal: check if steammon is affected by anything. If 
+    it is affected by anything at all, use a fullheal. I know in our written strategy
+    we said we would prioritize some statuses ahead of others, but because everything
+    is healed when we use a fullheal, it wouldn't make sense. And we can't just use
+    fullheal for certain statuses because then if we had a different status, it would
+    stay there forever. And if we based what statuses to use a fullheal on other things
+    like current hp and stuff, that would get SUPER complicated. so i just thought use
+    it on anything*)
+    match activeMonster.status with
+    | None -> false (*Not affected by anything - return false*)
+    | Some x -> true (*Is affected by something - return true*)
+  else false
+
+
+
+
+(*Helper function that determines if we should use an ether. returns true
+if yes, false if no*)
+let use_ether (activeMonster : steammon) (inv : inventory) : bool =
+
+  (*Check to see if we have any ethers left; if so, check to see if we should use it*)
+  if (List.hd inv > 0) then 
+
+    (*See if we should use an ether. We should only use one when the sum of PP's across all
+    attack moves is < 4*)
+    if (activeMonster.first_move.pp_remaining + activeMonster.second_move.pp_remaining +
+    activeMonster.third_move.pp_remaining + activeMonster.fourth_move.pp_remaining < 4) then true
+
+    else false
+  else false
+
+
+
+
+
+
+(*Helper function that determines if we should use a revive. returns true if
+yes, false if no*)
+let use_revive (deck : steammon list) (inv : inventory) (enemy : steammon) : bool * steammon =
+
+  (*Check to see if we have any revives left; if so, check to see if we should use it*)
+  if (List.nth inv 2 > 0) then
+
+    (*See if we should use a revive. We should only use a revive if there are less
+      than 3 steammons useable (nonfainted) in our deck. Choose the "best" pokemon to revive using
+      battle round point system.*)
+
+    (*Check number of nonfainted steammons left*)
+    (
+    let num_of_available_steammons = List.fold_left (fun a e -> if e.curr_hp<=0 then a+1 else a) 0 deck in
+
+    (*Check if this number if less than 3*)
+    if (num_of_available_steammons < 3) then 
+
+      (*If so, fold through your deck and check if a steammon is fainted; if so, return a tuple of
+      its ranking and the steammon, creating a list of available options for you to revive*)
+      (let lst = List.fold_left (fun a e -> [(battleRound_point_system e enemy,e)]@a) [] deck in
+
+      (*Now fold through your list of rankings and find the highest ranked steammon
+        and return a tuple of the steammon and its ranking*)
+      let pick = List.fold_left (fun a1 e1 -> match e1 with
+        | (points,monster) -> match a1 with
+          | (mostPoints,bestMonster) -> if points>mostPoints then e1 else a1) (List.hd lst) lst in
+
+      match pick with
+      | (p,m) -> (true,m)) else (false,List.hd deck))
+  else (false,List.hd deck)
+
+
+
+
+
+
+
+(*Helper function to determine if we should use an item. Uses a bunch of mini helper functions
+to see if we should use each of the items we have available. Only items we buy are Ether, 
+full-heal, revive, and max potion. Function returns a tuple of a bool 
+(should we use an item? -false if no, true if yes) and an item (which item we should use)*)
+let should_we_use_item (activeMonster : steammon) (deck: steammon list) (inv : inventory) (enemy : steammon) : bool * item * steammon = 
+
+  (*Order of importance of items is as follows: max potion > full-heal > ether > revive*)
+
+  if (use_maxPotion activeMonster inv) = true then (true,MaxPotion,activeMonster)
+  else if (use_fullHeal activeMonster inv) = true then (true,FullHeal,activeMonster)
+  else if (use_ether activeMonster inv) = true then (true,Ether,activeMonster)
+  else if (match (use_revive deck inv enemy) with 
+    | (true,m) -> true
+    | (false,_) -> false) then (match (use_revive deck inv enemy) with 
+      | (true,m) -> (true,Revive,m)
+      | _ -> failwith "impossible")
+
+  (*randomly put in an item and monster - doesn't matter since we won't use this data*)
+  else (false,MaxPotion,activeMonster)
+
+
+
+
+
+
+
+
+
+(*Helper function to choose a move for a steammon. Returns a move*)
+let which_move (activeMonster : steammon) (enemy : steammon) : move =
+
+  (*Create a list of moves for the steammon*)
+  let totalMoves = [activeMonster.first_move]@[activeMonster.second_move]@[activeMonster.third_move]@[activeMonster.fourth_move] in
+
+  (*Check which moves have enough PP*)
+  let move_options = List.fold_left (fun a e -> if e.pp_remaining=0 then a else [e]@a) [] totalMoves in
+
+  (*Using the move point system, make a list of tuples : of type int (points) and type move *)
+  let move_scores = List.fold_left (fun acc el -> [(move_point_system el activeMonster enemy,el)]@acc) [] move_options in
+
+  (*Find largest score out of the list and return the tuple of the score and the move*)
+  let pick = List.fold_left (fun a1 e1 -> match e1 with
+    | (score,move) -> (match a1 with
+      | (largestScore,bestMove) -> if score>largestScore then e1 else a1)) (List.hd move_scores) move_scores in
+
+  match pick with
+  | (s,m) -> m
+
+
+
+
+
+
+
+
+
+(*Helper function to perform action requests. Process is three-fold:
+1. Decide if we need to switch steammon - if not, proceed to step 2
+2. Decide if we should use an item - if not, proceed to step 3
+3. Make a move *)
+let action_request_helper (gr: game_status_data) (c: color) =
+
+  (*Set up enemy's team data and my team's data*)
+  let (a1,b1) = gr in
+  let my_team = if c = Red then a1 else b1 in
+  let e_team = if c = Red then b1 else a1 in
+  let (myMonsters, myInventory, myCredits) = my_team in
+  let (eMonsters, eInventory, eCredits) = e_team in
+
+  (*First step : decide if we need to switch steammon. Need to be fairly high threshold, bc
+  we don't want an infinite loop where we just keep switching steammon. There is only one
+  reason we would want to switch our pokemon:
+
+  If our pokemon is in an UNFAVORABLE matchup AND we have a better option*)
+
+  
+  match (should_we_switch (List.hd myMonsters) (List.hd eMonsters) myMonsters) with
+  | (true,m) -> (*We should switch, so we use the battleRound point system to find
+              the best option*)
+             SwitchSteammon m.species
+
+  | (false,_) -> (*We shouldn't switch, so go onto the next phase: should we use an item?*)
+
+
+    (match (should_we_use_item (List.hd myMonsters) myMonsters myInventory (List.hd eMonsters)) with 
+      | (true,item,monster) -> UseItem (item,monster.species)
+      | (false,item,monster) -> (*Ok so now we don't need to use an item. Time for a move*)
+            UseMove ((which_move (List.hd myMonsters) (List.hd eMonsters)).name))
+
+
+
+
+
+(* handle_request c r responds to a request r by returning an action. The color c 
+ * allows the bot to know what color it is. *)
+let handle_request (c : color) (r : request) : action =
+  match r with
+    | TeamNameRequest -> SendTeamName(name)
+    | StarterRequest(gs)-> starter_request_helper gs c
+    | PickRequest(c, gsd, ms, sp) -> pick_request_helper gsd c ms sp 
+    | ActionRequest (gr) -> action_request_helper gr c
+	 | PickInventoryRequest (gr) -> PickInventory ([1;4;0;2;0;0;0])
+let () = run_bot handle_request
